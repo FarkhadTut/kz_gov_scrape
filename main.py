@@ -5,13 +5,16 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
-import sys
+import os
 import time
+import pandas as pd
 
-URL = 'https://www.gov.kz/'
+URL = 'https://www.gov.kz'
+URL_RU = 'https://www.gov.kz?lang=ru'
+STRUC_URL = 'https://www.gov.kz/memleket/entities/{link}/about/structure?lang=ru'
 
-
-
+def structure_url(link):
+    return STRUC_URL.format(link=link)
 
 
 
@@ -29,7 +32,7 @@ class Browser(webdriver.Chrome):
         )
         self.click(element)
     
-    def click(self, element):
+    def click(self, element, wait_xpath=None):
         if not self.is_clickable(element):
             distance_y = int(element.rect['y'] - self.cur_pos)
             self.actions.scroll_by_amount(0, distance_y).perform()
@@ -37,6 +40,11 @@ class Browser(webdriver.Chrome):
             time.sleep(0.5)
         self.actions.click(element)
         self.actions.perform()
+
+        if not wait_xpath is None:
+            WebDriverWait(self, self.wait).until(
+                EC.presence_of_element_located((By.XPATH, wait_xpath))
+            )
 
     def get_list_of_elements(self, xpath=None, by_class=None, by_tagname=None, by_xpath=None):
         if not xpath is None:
@@ -77,12 +85,10 @@ class Browser(webdriver.Chrome):
 
 
 
-browser = Browser(URL)
-STRUC_URL = 'https://www.gov.kz/memleket/entities/{link}/about/structure?lang=ru'
+browser = Browser(URL_RU)
 
 
-def structure_url(link):
-    return STRUC_URL.format(link=link)
+
 
 ####### MINISTRIES ###############
 def get_ministries():
@@ -94,11 +100,15 @@ def get_ministries():
 
     ministries = []
     for ministry in ministry_elements:
+        temp_dict = {}
         browser.click(ministry)
         element = browser.find_page_element('/html/body/div/header/div/div/div/div[1]/div/div[1]/div[2]/div[2]/div/div/a[2]')
         link = element.get_attribute('href')
-        link = link.split('/')[-1]
-        ministries.append(link)
+        link = link.split('/')[-3]
+        link = structure_url(link)
+        temp_dict['name'] = ministry.text.strip()
+        temp_dict['link'] = link
+        ministries.append(temp_dict)
 
     print("SUCESS MINISTRIES:", len(ministries))
     
@@ -117,11 +127,15 @@ def get_akimats():
 
     akimats = []
     for akimat in akimat_elements:
+        temp_dict = {}
         browser.click(akimat)
         element = browser.find_page_element('/html/body/div/header/div/div/div/div[1]/div/div[1]/div[2]/div[2]/div/div/a[2]')
         link = element.get_attribute('href')
-        link = link.split('/')[-1]
-        akimats.append(link)
+        link = link.split('/')[-3]
+        link = structure_url(link)
+        temp_dict['link'] = link
+        temp_dict['name'] = akimat.text.strip()
+        akimats.append(temp_dict)
 
 
     print("SUCESS AKIMATS:", len(akimats))
@@ -143,18 +157,20 @@ def get_others():
                                                 by_class='.catalog-option__content__list-item')
 
     others = []
-    print(len(other_elements))
     for other in other_elements:
         temp_dict = {}
         name = other.text.strip()
         if name == 'Ревизионные комиссии':
-            browser.click(other)
+            browser.click(other, wait_xpath="/html/body/div[1]/main/div/section")
             other_elements = browser.get_list_of_elements('/html/body/div[1]/main/div/section/div[2]', 
-                                                by_xpath='//div[@class="inner-html"]//p')
+                                                by_xpath='//div[@class="inner-html"]//a')
+            
+            print(len(other_elements))
             for e in other_elements:
                 name = e.text.strip()
                 link = e.get_attribute('href')
-                link = link.split('/')[-1]
+                link = link.split('/')[-3]
+                link = structure_url(link)
                 temp_dict['link'] = link
                 temp_dict['name'] = name
                 others.append(temp_dict)
@@ -162,7 +178,8 @@ def get_others():
             browser.click(other)
             element = browser.find_page_element('/html/body/div/header/div/div/div/div[1]/div/div[1]/div[2]/div[2]/div/div/a[2]')
             link = element.get_attribute('href')
-            link = link.split('/')[-1]
+            link = link.split('/')[-3]
+            link = structure_url(link)
             temp_dict['link'] = link
             temp_dict['name'] = name
 
@@ -192,12 +209,13 @@ def get_maslihats():
         temp_dict = {}
         name = link.text.strip()
         maslihat_link = link.get_attribute('href')
-        maslihat_link = maslihat_link.strip('/')[-1]
+        maslihat_link = maslihat_link.strip('/')[-3]
+        maslihat_link = structure_url(maslihat_link)
         temp_dict['name'] = name
         temp_dict['link'] = maslihat_link
 
         # if 'https://www.gov.kz/memleket/entities/' in maslihat_link and not 'documents' in maslihat_link:
-        maslihats.append(maslihat_link)
+        maslihats.append(temp_dict)
         
     print("SUCESS MASLIHATS:", len(maslihats))
 
@@ -205,16 +223,71 @@ def get_maslihats():
 
 
 
+def get_final_data(all_links):
+    df_out = pd.DataFrame()
+    
+    for key in all_links.keys():
+        for l in all_links[key]:
+            link = l['link']
+            short_slug = '/' + link.split('/')[5]
+            r = requests.get(link)
+            
+            if r.ok:
+                html = r.text
+                
+                soup = BeautifulSoup(html, 'html.parser')
+                elements = soup.find_all('div', attrs={'class':'col-md-6'})
+                elements = [e for e in elements if e.find('img') is None and not 'Руководство' in str(e)]
+
+                for e in elements:
+                    ds = pd.Series(dtype='float64')
+                    tgt = e.find_all('div')
+
+                    ds['section'] = key
+                    ds['name'] = tgt[0].getText()
+                    ds['position'] = tgt[1].getText()
+                    ds['bio'] = URL + tgt[2].find('a', href=True)['href'].replace('/mdai', short_slug)
+                    ds['phone'] = tgt[4].find('a').getText()
+                    ds['email'] = tgt[6].find('a').getText()
+                    ds['graphic'] = None
+                    try:
+                        ds['graphic'] = '; '.join([t.getText() for t in tgt[8:]])
+                    except:
+                        ds['graphic'] = None
+
+                    df = ds.to_frame().T
+                    if df_out.empty:
+                        df_out = df
+                    else:
+                        df_out = pd.concat([df_out, df], axis=0)
+            else:
+                raise Exception(str(r) + ' ' + link)
+
+    df_out.reset_index(drop=True, inplace=True)
+    return df_out
 
 
 def main(*args, **kwargs):
-    all_links = []
-    all_links += get_ministries()
-    all_links += get_akimats()
-    all_links += get_others()
-    all_links += get_maslihats()
+    filename = 'gov_kz_scrape.xlsx'
+    all_links = {}
+    all_links['maslihats'] = get_maslihats()
+    all_links['ministries'] = get_ministries()
+    all_links['akimats'] = get_akimats()
+    all_links['others'] = get_others()
+    df = get_final_data(all_links)
 
-    print(len(all_links))
+    root = os.getcwd()
+    out_folder = os.path.join(root, 'out')
+    if not os.path.isdir(out_folder):
+        os.mkdir(out_folder)
+
+    filename_out = os.path.join(out_folder, filename)
+    df.to_excel(filename_out, index=False)
+    
+            
+
+
+    
 
 if __name__ == '__main__':
     main()
